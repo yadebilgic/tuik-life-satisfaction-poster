@@ -1,0 +1,698 @@
+---
+title: "SÜRDÜRÜLEBİLİR KALKINMA AMACI 16"
+author: "Yade İrem Bilgic"
+date: "2026-06-06"
+output: html_document
+---
+
+```{r}
+# ==============================================================================
+# SÜRDÜRÜLEBİLİR KALKINMA AMACI 16 - BİLİMSEL POSTER VERİ ANALİZİ
+# Güncellenmiş Dosya İsimlerine Uygun Kusursuz Kod Bloğu
+# ==============================================================================
+
+# 1. GEREKLİ KÜTÜPHANELERİ YÜKLEYELİM VE AÇALIM
+if(!require(tidyverse)) install.packages("tidyverse")
+if(!require(readxl)) install.packages("readxl")
+library(tidyverse)
+library(readxl)
+
+# 2. DOSYA YOLLARINI TANIMLAYALIM (Konsoldaki Gerçek İsimler)
+klasor_yolu <- "C:/gorsellestirme/"
+
+sokak_dosya_adi <- "sokak.csv.xls"
+ev_dosya_adi    <- "ev.csv.xls"
+
+sokak_tam_yol <- paste0(klasor_yolu, sokak_dosya_adi)
+ev_tam_yol    <- paste0(klasor_yolu, ev_dosya_adi)
+
+# 3. HEM CSV HEM EXCEL FORMATINI OTOMATİK DESTEKLEYEN TEMİZLEME FONKSİYONU
+tuik_temizle <- function(dosya_yolu, mekan_etiketi) {
+  
+  # Dosyanın gerçek yapısını anlamak için güvenli bir okuma yapısı kuruyoruz
+  ham_tablo <- tryCatch({
+    # Önce CSV olarak okumayı dene
+    df <- read.csv(dosya_yolu, header = FALSE, stringsAsFactors = FALSE)
+    if(ncol(df) < 5) stop("Format uymadı, Excel denenecek.")
+    df
+  }, error = function(e) {
+    # CSV başarısız olursa Excel olarak oku
+    as.data.frame(read_excel(dosya_yolu, col_names = FALSE))
+  })
+  
+  # Yılları sabitleyelim (4. satırda, 3. sütundan 25. sütuna kadar olan yıllar: 2003-2025)
+  yillar <- as.numeric(ham_tablo[4, 3:25])
+  kategoriler <- c("Cok_Guvenli", "Guvenli", "Ne_Guvenli_Ne_Guvensiz", "Guvensiz", "Cok_Guvensiz")
+  
+  # ERKEK VERİSİ (12:16 satırları arasını dikey hale getiriyoruz)
+  erkek_matris <- t(ham_tablo[12:16, 3:25])
+  colnames(erkek_matris) <- kategoriler
+  erkek_df <- as.data.frame(erkek_matris) %>% 
+    mutate(Yil = yillar, Cinsiyet = "Erkek")
+  
+  # KADIN VERİSİ (18:22 satırları arasını dikey hale getiriyoruz)
+  kadin_matris <- t(ham_tablo[18:22, 3:25])
+  colnames(kadin_matris) <- kategoriler
+  kadin_df <- as.data.frame(kadin_matris) %>% 
+    mutate(Yil = yillar, Cinsiyet = "Kadin")
+  
+  # Tabloları birleştir, virgülleri noktaya çevir ve karakterleri sayısal (numeric) yap
+  temiz_df <- bind_rows(erkek_df, kadin_df) %>%
+    mutate(Mekan = mekan_etiketi) %>%
+    mutate(across(Cok_Guvenli:Cok_Guvensiz, ~ as.numeric(gsub(",", ".", .))))
+  
+  return(temiz_df)
+}
+
+# 4. VERİLERİ OKUYALIM VE MASTER TABLOYU OLUŞTURALIM
+sokak_veri <- tuik_temizle(sokak_tam_yol, "Sokak")
+ev_veri    <- tuik_temizle(ev_tam_yol, "Ev")
+
+master_veri <- bind_rows(sokak_veri, ev_veri) %>%
+  mutate(
+    Toplam_Guvenli = Cok_Guvenli + Guvenli,
+    Toplam_Tedirgin = Guvensiz + Cok_Guvensiz
+  )
+
+print("--- Master Veri Seti Başarıyla Oluşturuldu ---")
+
+# ==============================================================================
+# GRAFİK 1: EV VE SOKAK GÜVENLİK ALGISININ ZAMAN SERİSİ TREND ANALİZİ
+# ==============================================================================
+g1 <- ggplot(master_veri, aes(x = Yil, y = Toplam_Guvenli, color = Cinsiyet, linetype = Mekan, group = interaction(Cinsiyet, Mekan))) +
+  geom_line(size = 1.2) +
+  geom_point(size = 2.5) +
+  scale_color_manual(values = c("Erkek" = "#1f77b4", "Kadin" = "#e377c2")) +
+  labs(
+    title = "Türkiye'de Ev ve Sokak Güvenlik Algısı Trendi (2003-2025)",
+    subtitle = "Cinsiyete ve Mekana Göre 'Çok Güvenli ve Güvenli' Hissedenlerin Oranı (%)",
+    x = "Yıl",
+    y = "Toplam Güvenli Hissedenlerin Oranı (%)",
+    color = "Cinsiyet",
+    linetype = "Mekan",
+    caption = "Kaynak: TÜİK Yaşam Memnuniyeti Araştırması"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16, hjust = 0.5, margin = margin(b=10)),
+    plot.subtitle = element_text(size = 12, hjust = 0.5, color = "gray30"),
+    legend.position = "bottom",
+    panel.grid.minor = element_blank()
+  )
+
+ggsave(paste0(klasor_yolu, "grafik1_trend_analizi.png"), plot = g1, width = 10, height = 6, dpi = 300)
+
+# ==============================================================================
+# GRAFİK 2: GECE SOKAKTA CİNSİYET UÇURUMU (DUMBBELL / DAMBIL GRAFİĞİ)
+# ==============================================================================
+sokak_dumbbell_data <- master_veri %>%
+  filter(Mekan == "Sokak", Yil %in% c(2004, 2010, 2015, 2020, 2025)) %>%
+  select(Yil, Cinsiyet, Toplam_Guvenli) %>%
+  pivot_wider(names_from = Cinsiyet, values_from = Toplam_Guvenli)
+
+g2 <- ggplot(sokak_dumbbell_data) +
+  geom_segment(aes(x = Kadin, xend = Erkek, y = as.factor(Yil), yend = as.factor(Yil)), color = "#cbd5e1", size = 2) +
+  geom_point(aes(x = Kadin, y = as.factor(Yil)), color = "#e377c2", size = 5) +
+  geom_point(aes(x = Erkek, y = as.factor(Yil)), color = "#1f77b4", size = 5) +
+  geom_text(aes(x = Kadin, y = as.factor(Yil), label = paste0("%", round(Kadin, 1))), vjust = -1.2, size = 4, fontface = "bold", color = "#b03a8a") +
+  geom_text(aes(x = Erkek, y = as.factor(Yil), label = paste0("%", round(Erkek, 1))), vjust = -1.2, size = 4, fontface = "bold", color = "#1a5f8c") +
+  labs(
+    title = "Gece Sokakta Yalnız Yürürken Güvenlik Algısındaki Cinsiyet Uçurumu",
+    subtitle = "Seçilmiş Karşılaştırma Yıllarında Erkek ve Kadın Arasındaki Güven Oranı Farkı (Sokak)",
+    x = "Güvenli Hissedenlerin Oranı (%)",
+    y = "Yıl",
+    caption = "Pembe: Kadın | Mavi: Erkek  •  Kaynak: TÜİK"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", size = 15, hjust = 0.5, margin = margin(b=10)),
+    plot.subtitle = element_text(size = 11, hjust = 0.5, color = "gray30"),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+ggsave(paste0(klasor_yolu, "grafik2_cinsiyet_ucurumu_dumbbell.png"), plot = g2, width = 10, height = 6, dpi = 300)
+
+# ==============================================================================
+# GRAFİK 3: 2025 YILI BEŞLİ LİKERT ALGI DAĞILIMI (FACETED COMPONENT BAR)
+# ==============================================================================
+likert_2025 <- master_veri %>%
+  filter(Yil == 2025) %>%
+  select(Cinsiyet, Mekan, Cok_Guvenli, Guvenli, Ne_Guvenli_Ne_Guvensiz, Guvensiz, Cok_Guvensiz) %>%
+  pivot_longer(cols = Cok_Guvenli:Cok_Guvensiz, names_to = "Algi", values_to = "Yuzde") %>%
+  mutate(Algi = factor(Algi, levels = c("Cok_Guvenli", "Guvenli", "Ne_Guvenli_Ne_Guvensiz", "Guvensiz", "Cok_Guvensiz"),
+                       labels = c("Çok Güvenli", "Güvenli", "Ne Güvenli Ne Güvensiz", "Güvensiz", "Çok Güvensiz")))
+
+g3 <- ggplot(likert_2025, aes(x = Cinsiyet, y = Yuzde, fill = Algi)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.6) +
+  facet_wrap(~ Mekan) +
+  scale_fill_manual(values = c("Çok Güvenli" = "#2ecc71", "Güvenli" = "#a3e4d7", "Ne Güvenli Ne Güvensiz" = "#fcf3cf", "Güvensiz" = "#f5b7b1", "Çok Güvensiz" = "#e74c3c")) +
+  geom_text(aes(label = ifelse(Yuzde > 3, paste0(round(Yuzde, 1), "%"), "")), 
+            position = position_stack(vjust = 0.5), size = 3.5, fontface = "bold", color = "black") +
+  labs(
+    title = "Güncel Durum Analizi: 2025 Yılı Güvenlik Algısı Dağılımı",
+    subtitle = "Evde Yalnızken ve Gece Sokakta Yalnız Yürürken Hissedilen Duyguların Dağılımı (%)",
+    x = "Cinsiyet",
+    y = "Yüzde (%)",
+    fill = "Güvenlik Algısı Seviyesi",
+    caption = "Kaynak: TÜİK Yaşam Memnuniyeti Araştırması Resmi Verileri"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16, hjust = 0.5, margin = margin(b=10)),
+    plot.subtitle = element_text(size = 12, hjust = 0.5, color = "gray30"),
+    legend.position = "right",
+    panel.grid = element_blank()
+  )
+
+ggsave(paste0(klasor_yolu, "grafik3_likert_dagilimi.png"), plot = g3, width = 11, height = 6, dpi = 300)
+
+print("--- MÜKEMMEL! 3 Grafik de 'C:/gorsellestirme/' Klasörüne Kaydedildi! ---")
+
+# ==============================================================================
+# GRAFİK 4: EV VE SOKAKTAKİ CİNSİYET GÜVENLİK AÇIĞI TRENDİ (GAP ANALYSIS)
+# ==============================================================================
+# Veriden bağımsız yeni bir eşitsizlik metriği türetiyoruz
+gap_trend_data <- master_veri %>%
+  select(Yil, Cinsiyet, Mekan, Toplam_Guvenli) %>%
+  pivot_wider(names_from = Cinsiyet, values_from = Toplam_Guvenli) %>%
+  mutate(Guvenlik_Acigi = Erkek - Kadin)
+
+g4 <- ggplot(gap_trend_data, aes(x = Yil, y = Guvenlik_Acigi, color = Mekan, group = Mekan)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 2.5) +
+  scale_color_manual(values = c("Sokak" = "#e74c3c", "Ev" = "#2ecc71")) +
+  labs(
+    title = "Mekanlara Göre Cinsiyetler Arası Güvenlik Açığı Trendi (2003-2025)",
+    subtitle = "Matematiksel Model: [Erkek Güven Oranı (%) - Kadın Güven Oranı (%)]",
+    x = "Yıl",
+    y = "Cinsiyetler Arası Güvenlik Farkı (Yüzde Puanı)",
+    color = "İncelenen Mekan",
+    caption = "Çizgi ne kadar yüksekse eşitsizlik o kadar fazladır. • Kaynak: TÜİK"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", size = 15, hjust = 0.5, margin = margin(b=10)),
+    plot.subtitle = element_text(size = 11, hjust = 0.5, color = "gray30"),
+    legend.position = "bottom",
+    panel.grid.minor = element_blank()
+  )
+
+# Grafik 4'ü de C:/gorsellestirme/ klasörüne kaydediyoruz
+ggsave(paste0(klasor_yolu, "grafik4_gap_trend.png"), plot = g4, width = 10, height = 6, dpi = 300)
+
+print("--- 4. Grafik de Başarıyla Klasöre Eklendi! ---")
+```
+
+```{r}
+# ==============================================================================
+# SKA 16 POSTERİ - HARMONİK VE KURUMSAL RENK PALETLİ NİHAİ KOD
+# ==============================================================================
+
+if(!require(tidyverse)) install.packages("tidyverse")
+if(!require(readxl)) install.packages("readxl")
+library(tidyverse)
+library(readxl)
+
+# 1. DOSYA YOLLARI
+klasor_yolu <- "C:/gorsellestirme/"
+sokak_tam_yol <- paste0(klasor_yolu, "sokak.csv.xls")
+ev_tam_yol    <- paste0(klasor_yolu, "ev.csv.xls")
+
+# 2. SABİT KURUMSAL RENKLERİMİZ
+RENK_ERKEK_EV   <- "#1e3a8a" # Koyu Akademik Mavi
+RENK_GUVENLI    <- "#3b82f6" # Açık Güven Mavisi
+RENK_NOTR       <- "#94a3b8" # Nötr Gri
+RENK_KADIN_SOK  <- "#f97316" # Kehribar / Turuncu
+RENK_GUVENSIZ   <- "#9a3412" # Koyu Kiremit / Risk
+
+# 3. VERİ TEMİZLEME FONKSİYONU
+tuik_temizle <- function(dosya_yolu, mekan_etiketi) {
+  ham_tablo <- tryCatch({
+    df <- read.csv(dosya_yolu, header = FALSE, stringsAsFactors = FALSE)
+    if(ncol(df) < 5) stop("Format uymadı")
+    df
+  }, error = function(e) {
+    as.data.frame(read_excel(dosya_yolu, col_names = FALSE))
+  })
+  
+  yillar <- as.numeric(ham_tablo[4, 3:25])
+  kategoriler <- c("Cok_Guvenli", "Guvenli", "Ne_Guvenli_Ne_Guvensiz", "Guvensiz", "Cok_Guvensiz")
+  
+  erkek_df <- as.data.frame(t(ham_tablo[12:16, 3:25])) %>% 
+    `colnames<-`(kategoriler) %>% mutate(Yil = yillar, Cinsiyet = "Erkek")
+  
+  kadin_df <- as.data.frame(t(ham_tablo[18:22, 3:25])) %>% 
+    `colnames<-`(kategoriler) %>% mutate(Yil = yillar, Cinsiyet = "Kadin")
+  
+  bind_rows(erkek_df, kadin_df) %>%
+    mutate(Mekan = mekan_etiketi) %>%
+    mutate(across(Cok_Guvenli:Cok_Guvensiz, ~ as.numeric(gsub(",", ".", .))))
+}
+
+# 4. MASTER VERİ SETİ OLUŞTURMA
+master_veri <- bind_rows(tuik_temizle(sokak_tam_yol, "Sokak"), tuik_temizle(ev_tam_yol, "Ev")) %>%
+  mutate(Toplam_Guvenli = Cok_Guvenli + Guvenli, Toplam_Tedirgin = Guvensiz + Cok_Guvensiz)
+
+# ==============================================================================
+# GRAFİK 1: TREND ANALİZİ (YENİ PALET)
+# ==============================================================================
+g1 <- ggplot(master_veri, aes(x = Yil, y = Toplam_Guvenli, color = Cinsiyet, linetype = Mekan, group = interaction(Cinsiyet, Mekan))) +
+  geom_line(size = 1.2) + geom_point(size = 2.5) +
+  scale_color_manual(values = c("Erkek" = RENK_ERKEK_EV, "Kadin" = RENK_KADIN_SOK)) +
+  labs(title = "Türkiye'de Ev ve Sokak Güvenlik Algısı Trendi (2003-2025)",
+       subtitle = "Cinsiyete ve Mekana Göre 'Çok Güvenli ve Güvenli' Hissedenlerin Oranı (%)",
+       x = "Yıl", y = "Toplam Güvenli Oranı (%)", color = "Cinsiyet", linetype = "Mekan", caption = "Kaynak: TÜİK") +
+  theme_minimal(base_size = 14) + theme(plot.title = element_text(face = "bold", hjust = 0.5), plot.subtitle = element_text(hjust = 0.5, color = "gray30"), legend.position = "bottom")
+
+ggsave(paste0(klasor_yolu, "grafik1_trend_analizi.png"), plot = g1, width = 10, height = 6, dpi = 300)
+g1
+
+# ==============================================================================
+# GRAFİK 2: DUMBBELL PLOT (YENİ PALET)
+# ==============================================================================
+sokak_dumbbell_data <- master_veri %>% filter(Mekan == "Sokak", Yil %in% c(2004, 2010, 2015, 2020, 2025)) %>%
+  select(Yil, Cinsiyet, Toplam_Guvenli) %>% pivot_wider(names_from = Cinsiyet, values_from = Toplam_Guvenli)
+
+g2 <- ggplot(sokak_dumbbell_data) +
+  geom_segment(aes(x = Kadin, xend = Erkek, y = as.factor(Yil), yend = as.factor(Yil)), color = "#e2e8f0", size = 2) +
+  geom_point(aes(x = Kadin, y = as.factor(Yil)), color = RENK_KADIN_SOK, size = 5) +
+  geom_point(aes(x = Erkek, y = as.factor(Yil)), color = RENK_ERKEK_EV, size = 5) +
+  geom_text(aes(x = Kadin, y = as.factor(Yil), label = paste0("%", round(Kadin, 1))), vjust = -1.2, size = 4, fontface = "bold", color = RENK_GUVENSIZ) +
+  geom_text(aes(x = Erkek, y = as.factor(Yil), label = paste0("%", round(Erkek, 1))), vjust = -1.2, size = 4, fontface = "bold", color = RENK_ERKEK_EV) +
+  labs(title = "Gece Sokakta Yalnız Yürürken Güvenlik Algısındaki Cinsiyet Uçurumu",
+       subtitle = "Seçilmiş Karşılaştırma Yıllarında Erkek ve Kadın Arasındaki Güven Oranı Farkı (Sokak)",
+       x = "Güvenli Hissedenlerin Oranı (%)", y = "Yıl", caption = "Turuncu: Kadın | Mavi: Erkek • Kaynak: TÜİK") +
+  theme_minimal(base_size = 14) + theme(plot.title = element_text(face = "bold", hjust = 0.5), plot.subtitle = element_text(hjust = 0.5, color = "gray30"), panel.grid.major.y = element_blank())
+
+ggsave(paste0(klasor_yolu, "grafik2_cinsiyet_ucurumu_dumbbell.png"), plot = g2, width = 10, height = 6, dpi = 300)
+g2
+
+# ==============================================================================
+# GRAFİK 3: BEŞLİ LİKERT ALGI DAĞILIMI (YENİ HARMONİK PALET)
+# ==============================================================================
+likert_2025 <- master_veri %>% filter(Yil == 2025) %>%
+  select(Cinsiyet, Mekan, Cok_Guvenli, Guvenli, Ne_Guvenli_Ne_Guvensiz, Guvensiz, Cok_Guvensiz) %>%
+  pivot_longer(cols = Cok_Guvenli:Cok_Guvensiz, names_to = "Algi", values_to = "Yuzde") %>%
+  mutate(Algi = factor(Algi, levels = c("Cok_Guvenli", "Guvenli", "Ne_Guvenli_Ne_Guvensiz", "Guvensiz", "Cok_Guvensiz"),
+                       labels = c("Çok Güvenli", "Güvenli", "Ne Güvenli Ne Güvensiz", "Güvensiz", "Çok Güvensiz")))
+
+g3 <- ggplot(likert_2025, aes(x = Cinsiyet, y = Yuzde, fill = Algi)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.6) + facet_wrap(~ Mekan) +
+  scale_fill_manual(values = c("Çok Güvenli" = RENK_ERKEK_EV, "Güvenli" = RENK_GUVENLI, "Ne Güvenli Ne Güvensiz" = RENK_NOTR, "Güvensiz" = RENK_KADIN_SOK, "Çok Güvensiz" = RENK_GUVENSIZ)) +
+  geom_text(aes(label = ifelse(Yuzde > 3, paste0(round(Yuzde, 1), "%"), "")), position = position_stack(vjust = 0.5), size = 3.5, fontface = "bold", color = "white") +
+  labs(title = "Güncel Durum Analizi: 2025 Yılı Güvenlik Algısı Dağılımı",
+       subtitle = "Evde Yalnızken ve Gece Sokakta Yalnız Yürürken Hissedilen Duyguların Dağılımı (%)",
+       x = "Cinsiyet", y = "Yüzde (%)", fill = "Güvenlik Algısı Seviyesi", caption = "Kaynak: TÜİK") +
+  theme_minimal(base_size = 14) + theme(plot.title = element_text(face = "bold", hjust = 0.5), plot.subtitle = element_text(hjust = 0.5, color = "gray30"), legend.position = "right", panel.grid = element_blank())
+
+ggsave(paste0(klasor_yolu, "grafik3_likert_dagilimi.png"), plot = g3, width = 11, height = 6, dpi = 300)
+g3
+
+# ==============================================================================
+# GRAFİK 4: GÜVENLİK AÇIĞI TRENDİ (YENİ PALET)
+# ==============================================================================
+gap_trend_data <- master_veri %>% select(Yil, Cinsiyet, Mekan, Toplam_Guvenli) %>%
+  pivot_wider(names_from = Cinsiyet, values_from = Toplam_Guvenli) %>% mutate(Guvenlik_Acigi = Erkek - Kadin)
+
+g4 <- ggplot(gap_trend_data, aes(x = Yil, y = Guvenlik_Acigi, color = Mekan, group = Mekan)) +
+  geom_line(size = 1.2) + geom_point(size = 2.5) +
+  scale_color_manual(values = c("Ev" = RENK_ERKEK_EV, "Sokak" = RENK_KADIN_SOK)) +
+  labs(title = "Mekanlara Göre Cinsiyetler Arası Güvenlik Açığı Trendi (2003-2025)",
+       subtitle = "Matematiksel Model: [Erkek Güven Oranı (%) - Kadın Güven Oranı (%)]",
+       x = "Yıl", y = "Cinsiyetler Arası Güvenlik Farkı (Yüzde Puanı)", color = "İncelenen Mekan", caption = "Kaynak: TÜİK") +
+  theme_minimal(base_size = 14) + theme(plot.title = element_text(face = "bold", hjust = 0.5), plot.subtitle = element_text(hjust = 0.5, color = "gray30"), legend.position = "bottom")
+
+ggsave(paste0(klasor_yolu, "grafik4_gap_trend.png"), plot = g4, width = 10, height = 6, dpi = 300)
+g4
+
+# ==============================================================================
+# GRAFİK 4: MEKANLARA GÖRE CİNSİYETLER ARASI GÜVENLİK AÇIĞI MATRİSİ (MANUEL RENK ROTASI)
+# ==============================================================================
+gap_matrix_data <- master_veri %>%
+  select(Yil, Cinsiyet, Mekan, Toplam_Guvenli) %>%
+  pivot_wider(names_from = Cinsiyet, values_from = Toplam_Guvenli) %>%
+  mutate(Guvenlik_Acigi = Erkek - Kadin)
+
+g4 <- ggplot(gap_matrix_data, aes(x = factor(Yil), y = Mekan, fill = Guvenlik_Acigi)) +
+  geom_tile(color = "white", size = 0.4) +
+  # SİHİRLİ DOKUNUŞ: R'ın hesaplamasını iptal edip, 5 kesin renk durağı ekledik.
+  # Mor/Lila bölgesine girmemesi için araya saf ve temiz bir "Gök Mavisi (#60a5fa)" koyduk!
+  scale_fill_gradientn(
+    colors = c("#1e3a8a", "#60a5fa", "#f8fafc", "#fdba74", "#f97316"),
+    values = scales::rescale(c(0, 6, 12, 18, 26)), # Geçiş noktalarını kilitledik
+    name = "Açık (Yüzde Puanı)"
+  ) +
+  labs(
+    title = "Zaman İçerisinde Cinsiyetler Arası Güvenlik Açığı Yoğunluk Matrisi",
+    subtitle = "Yıllara ve Mekanlara Göre Güvenlik Farkının Şiddeti [Erkek Oranı (%) - Kadın Oranı (%)]",
+    x = "Yıl",
+    y = "İncelenen Mekan",
+    caption = "Mavi renk eşitliğe yakınlığı, Turuncu renk ise derinleşen cinsiyet eşitsizliğini gösterir. • Kaynak: TÜİK"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5, margin = margin(b=10)),
+    plot.subtitle = element_text(size = 11, hjust = 0.5, color = "gray30"),
+    axis.text.x = element_text(angle = 45, hjust = 1, face = "bold"),
+    axis.text.y = element_text(face = "bold", size = 12),
+    panel.grid = element_blank(),
+    legend.position = "bottom",
+    legend.key.width = unit(2, "cm")
+  )
+
+# Kusursuz matrisi klasöre yazdırıyoruz
+ggsave(paste0(klasor_yolu, "grafik4_gap_trend.png"), plot = g4, width = 11, height = 5, dpi = 300)
+g4
+
+print("--- Yeni Nesil Matris Grafiği Başarıyla Üretildi! ---")
+
+print("--- KURUMSAL UYUM TAMAMLANDI! 4 GRAFİK DE YENİLENDİ ---")
+
+# ==============================================================================
+# GRAFİK 5: 20 YILLIK MAKRO DÖNÜŞÜM TERAZİSİ (DIVERGING LIKERT: 2004 vs 2025)
+# ==============================================================================
+# 2004 ve 2025 yıllarını seçip zaman serisindeki zıtlığı hazırlıyoruz
+likert_change_data <- master_veri %>%
+  filter(Yil %in% c(2004, 2025)) %>%
+  # Grafik ekseninde şık durması için Yıl ve Cinsiyeti birleştiriyoruz
+  mutate(Grup = paste(Yil, Cinsiyet, sep = " - ")) %>%
+  mutate(
+    # Risk kategorilerini sola (negatife) büküyoruz
+    `Çok Güvensiz` = -Cok_Guvensiz,
+    `Güvensiz`     = -Guvensiz,
+    # Nötr grubu tam sıfır çizgisinde ikiye bölüyoruz
+    `Ne Güvenli Ne Güvensiz (Sol)` = -Ne_Guvenli_Ne_Guvensiz / 2,
+    `Ne Güvenli Ne Güvensiz (Sağ)` =  Ne_Guvenli_Ne_Guvensiz / 2,
+    `Güvenli`      = Guvenli,
+    `Çok Güvenli`  = Cok_Guvenli
+  ) %>%
+  select(Grup, Mekan, Yil, Cinsiyet, `Çok Güvensiz`, `Güvensiz`, `Ne Güvenli Ne Güvensiz (Sol)`, `Ne Güvenli Ne Güvensiz (Sağ)`, `Güvenli`, `Çok Güvenli`) %>%
+  pivot_longer(cols = `Çok Güvensiz`:`Çok Güvenli`, names_to = "Algi", values_to = "Yuzde") %>%
+  mutate(Algi = factor(Algi, levels = c("Çok Güvensiz", "Güvensiz", "Ne Güvenli Ne Güvensiz (Sol)", "Ne Güvenli Ne Güvensiz (Sağ)", "Güvenli", "Çok Güvenli")))
+
+# Eksen sıralamasını kronolojik ve düzenli olarak kilitliyoruz
+likert_change_data$Grup <- factor(likert_change_data$Grup, 
+                                  levels = c("2025 - Kadin", "2004 - Kadin", "2025 - Erkek", "2004 - Erkek"))
+
+g5 <- ggplot(likert_change_data, aes(x = Grup, y = Yuzde, fill = Algi)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.65) +
+  facet_wrap(~ Mekan) +
+  # R'ın kafasına göre renk uydurmasını engellemek için tüm durakları tek tek kilitledik
+  scale_fill_manual(
+    values = c(
+      "Çok Güvensiz" = RENK_GUVENSIZ, 
+      "Güvensiz" = RENK_KADIN_SOK, 
+      "Ne Güvenli Ne Güvensiz (Sol)" = RENK_NOTR, 
+      "Ne Güvenli Ne Güvensiz (Sağ)" = RENK_NOTR, 
+      "Güvenli" = RENK_GUVENLI, 
+      "Çok Güvenli" = RENK_ERKEK_EV
+    ),
+    breaks = c("Çok Güvensiz", "Güvensiz", "Ne Güvenli Ne Güvensiz (Sağ)", "Güvenli", "Çok Güvenli"),
+    labels = c("Çok Güvensiz", "Güvensiz", "Ne Güvenli Ne Güvensiz", "Güvenli", "Çok Güvenli")
+  ) +
+  # Eksi değerleri tekrar pozitif gösteren akıllı etiketler
+  scale_y_continuous(labels = function(x) paste0(abs(x), "%"), limits = c(-65, 100)) +
+  # Tam merkez sıfır çizgisi (Terazinin Denge Mili)
+  geom_hline(yintercept = 0, color = "gray30", size = 0.7) +
+  labs(
+    title = "20 Yıllık Makro Dönüşüm: Güvenlik Algısı Terazisi (2004 vs 2025)",
+    subtitle = "Zaman İçerisinde Algı Kütlesinin Güven (Sağ) ve Güvensizlik (Sol) Yönüne Kayma Analizi (%)",
+    x = "Dönem ve Cinsiyet", y = "Yüzde Dağılımı (%)", fill = "Güvenlik Algısı Seviyesi", caption = "Kaynak: TÜİK"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5, color = "gray30"),
+    legend.position = "bottom",
+    panel.grid.minor = element_blank(),
+    axis.text.y = element_text(face = "bold", size = 11)
+  ) +
+  coord_flip() # Yatay terazi görünümü için eksenleri çeviriyoruz
+
+# Grafik 5'i klasöre yeni bir isimle kaydediyoruz (Böylece Grafik 3'ün üzerine yazmaz!)
+ggsave(paste0(klasor_yolu, "grafik5_likert_degisim.png"), plot = g5, width = 12, height = 6, dpi = 300)
+g5
+```
+
+
+```{r}
+# ==============================================================================
+# MSGSÜ İSTATİSTİK BÖLÜMÜ - GÖRSELLEŞTİRME PROJESİ ANA KODU (2003-2025)
+# SKA 16: CİNSİYET VE MEKAN BAĞLAMINDA GÜVENLİK ALGISI PARADOKSU
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. GEREKLİ KÜTÜPHANELERİN YÜKLENMESİ
+# ------------------------------------------------------------------------------
+library(tidyverse)
+library(readxl)
+library(scales)
+
+# ------------------------------------------------------------------------------
+# 2. ÇIKTI KLASÖRÜ VE KURUMSAL RENK PALETİNİN TANIMLANMASI
+# ------------------------------------------------------------------------------
+# NOT: Kendi bilgisayarındaki klasör yoluna göre burayı düzenleyebilirsin
+klasor_yolu <- "C:/gorsellestirme/" 
+if(!dir.exists(klasor_yolu)) dir.create(klasor_yolu, recursive = TRUE)
+
+# Kurumsal Renk Kimliği (Afiş Boyunca Sabit Kalan Kodlar)
+RENK_ERKEK_EV  <- "#1e3a8a"  # Asil Koyu Mavi (Erkek ve Ev Odağı)
+RENK_GUVENLI   <- "#3b82f6"  # Güven Mavisi (Güvenli Kategorileri)
+RENK_NOTR      <- "#94a3b8"  # Nötr Gri (Ne Güvenli Ne Güvensiz)
+RENK_KADIN_SOK <- "#f97316"  # Canlı Turuncu/Kehribar (Kadın ve Sokak Odağı)
+RENK_GUVENSIZ  <- "#b45309"  # Koyu Kahve/Turuncu (Çok Güvensiz)
+
+# ------------------------------------------------------------------------------
+# 3. VERİ SETİNİN HAZIRLANMASI (MASTER_VERI)
+# ------------------------------------------------------------------------------
+# Veri temizleme adımlarından sonra elindeki birleşik master veri setinin 
+# yapısı şu sütunlardan oluşmaktadır:
+# Yil, Cinsiyet, Mekan, Cok_Guvenli, Guvenli, Ne_Guvenli_Ne_Guvensiz, Guvensiz, Cok_Guvensiz, Toplam_Guvenli
+# (Toplam_Guvenli = Cok_Guvenli + Guvenli)
+
+# ==============================================================================
+# GRAFİK 1: TÜRKİYE'DE EV VE SOKAK GÜVENLİK ALGISI TRENDİ (2003-2025)
+# ==============================================================================
+g1 <- ggplot(master_veri, aes(x = Yil, y = Toplam_Guvenli, color = Cinsiyet, linetype = Mekan, group = interaction(Cinsiyet, Mekan))) +
+  geom_line(size = 1.3) +
+  geom_point(size = 3) +
+  scale_color_manual(values = c("Erkek" = RENK_ERKEK_EV, "Kadin" = RENK_KADIN_SOK)) +
+  scale_linetype_manual(values = c("Ev" = "solid", "Sokak" = "dashed")) +
+  labs(
+    title = "Türkiye'de Ev ve Sokak Güvenlik Algısı Trendi (2003-2025)",
+    subtitle = "Cinsiyete ve Mekana Göre 'Çok Güvenli ve Güvenli' Hissedenlerin Oranı (%)",
+    x = "Yıl",
+    y = "Toplam Güvenli Oranı (%)",
+    caption = "Kaynak: TÜİK Yaşam Memnuniyeti Araştırması"
+  ) +
+  scale_x_continuous(breaks = seq(2003, 2025, 5)) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5, color = "gray30"),
+    legend.position = "bottom"
+  )
+
+ggsave(paste0(klasor_yolu, "grafik1_trend_analizi.jpg"), plot = g1, width = 11, height = 6, dpi = 300)
+
+
+# ==============================================================================
+# GRAFİK 2: GECE SOKAKTA YALNIZ YÜRÜRKEN CİNSİYET UÇURUMU (DAMBIL GRAFİĞİ - 2003 BAŞLANGIÇLI)
+# ==============================================================================
+dumbbell_data <- master_veri %>%
+  filter(Mekan == "Sokak", Yil %in% c(2003, 2010, 2015, 2020, 2025)) %>%
+  select(Yil, Cinsiyet, Toplam_Guvenli) %>%
+  pivot_wider(names_from = Cinsiyet, values_from = Toplam_Guvenli)
+
+g2 <- ggplot(dumbbell_data) +
+  geom_segment(aes(x = Kadin, xend = Erkek, y = factor(Yil), yend = factor(Yil)), 
+               color = "#e2e8f0", size = 4.5, lineend = "round") +
+  # Kadın Noktaları (Turuncu)
+  geom_point(aes(x = Kadin, y = factor(Yil)), color = RENK_KADIN_SOK, size = 6) +
+  geom_text(aes(x = Kadin, y = factor(Yil), label = paste0("%", round(Kadin, 1))), 
+            vjust = -1.6, color = "#a16207", fontface = "bold", size = 4.5) +
+  # Erkek Noktaları (Koyu Mavi)
+  geom_point(aes(x = Erkek, y = factor(Yil)), color = RENK_ERKEK_EV, size = 6) +
+  geom_text(aes(x = Erkek, y = factor(Yil), label = paste0("%", round(Erkek, 1))), 
+            vjust = -1.6, color = RENK_ERKEK_EV, fontface = "bold", size = 4.5) +
+  labs(
+    title = "Gece Sokakta Yalnız Yürürken Güvenlik Algısındaki Cinsiyet Uçurumu",
+    subtitle = "Seçilmiş Karşılaştırma Yıllarında Erkek ve Kadın Arasındaki Güven Oranı Farkı (Sokak Kırılımı)",
+    x = "Güvenli Hissedenlerin Oranı (%)",
+    y = "Yıl",
+    caption = "Turuncu: Kadın | Mavi: Erkek • Kaynak: TÜİK"
+  ) +
+  scale_x_continuous(limits = c(30, 85), breaks = seq(30, 85, 10)) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5, margin = margin(b=10)),
+    plot.subtitle = element_text(size = 12, hjust = 0.5, color = "gray30"),
+    axis.text.y = element_text(face = "bold", size = 12),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+ggsave(paste0(klasor_yolu, "grafik2_cinsiyet_ucurumu_dumbbell.png"), plot = g2, width = 12, height = 6, dpi = 300)
+
+
+# ==============================================================================
+# GRAFİK 4: MEKANLARA GÖRE CİNSİYETLER ARASI GÜVENLİK AÇIĞI YOĞUNLUK MATRİSİ (LİLA HATASI GİDERİLDİ)
+# ==============================================================================
+gap_matrix_data <- master_veri %>%
+  select(Yil, Cinsiyet, Mekan, Toplam_Guvenli) %>%
+  pivot_wider(names_from = Cinsiyet, values_from = Toplam_Guvenli) %>%
+  mutate(Guvenlik_Acigi = Erkek - Kadin)
+
+g4 <- ggplot(gap_matrix_data, aes(x = factor(Yil), y = Mekan, fill = Guvenlik_Acigi)) +
+  geom_tile(color = "white", size = 0.4) +
+  # R'ın morlaşma/lila inadını kırmak için renk rotasını manuel çiviledik:
+  scale_fill_gradientn(
+    colors = c(RENK_ERKEK_EV, "#60a5fa", "#f8fafc", "#fdba74", RENK_KADIN_SOK),
+    values = scales::rescale(c(0, 6, 12, 18, 26)), 
+    name = "Açık (Yüzde Puanı)"
+  ) +
+  labs(
+    title = "Zaman İçerisinde Cinsiyetler Arası Güvenlik Açığı Yoğunluk Matrisi",
+    subtitle = "Yıllara ve Mekanlara Göre Güvenlik Farkının Şiddeti [Erkek Oranı (%) - Kadın Oranı (%)]",
+    x = "Yıl",
+    y = "İncelenen Mekan",
+    caption = "Mavi renk eşitliğe yakınlığı, Turuncu renk ise derinleşen cinsiyet eşitsizliğini gösterir. • Kaynak: TÜİK"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5, margin = margin(b=10)),
+    plot.subtitle = element_text(size = 11, hjust = 0.5, color = "gray30"),
+    axis.text.x = element_text(angle = 45, hjust = 1, face = "bold"),
+    axis.text.y = element_text(face = "bold", size = 12),
+    panel.grid = element_blank(),
+    legend.position = "bottom",
+    legend.key.width = unit(2, "cm")
+  )
+
+ggsave(paste0(klasor_yolu, "grafik4_gap_trend.png"), plot = g4, width = 11, height = 5, dpi = 300)
+
+
+# ==============================================================================
+# GRAFİK 5: 22 YILLIK MAKRO DÖNÜŞÜM TERAZİSİ (DIVERGING LIKERT: 2003 vs 2025)
+# ==============================================================================
+# Eski grafik 3 yerine gelen, veri tekrarını sıfırlayan ve 2003-2025 zıtlığını kuran terazi grafiği
+likert_change_data <- master_veri %>%
+  filter(Yil %in% c(2003, 2025)) %>%
+  mutate(Grup = paste(Yil, Cinsiyet, sep = " - ")) %>%
+  mutate(
+    `Çok Güvensiz` = -Cok_Guvensiz,
+    `Güvensiz`     = -Guvensiz,
+    `Ne Güvenli Ne Güvensiz (Sol)` = -Ne_Guvenli_Ne_Guvensiz / 2,
+    `Ne Güvenli Ne Güvensiz (Sağ)` =  Ne_Guvenli_Ne_Guvensiz / 2,
+    `Güvenli`      = Guvenli,
+    `Çok Güvenli`  = Cok_Guvenli
+  ) %>%
+  select(Grup, Mekan, Yil, Cinsiyet, `Çok Güvensiz`, `Güvensiz`, `Ne Güvenli Ne Güvensiz (Sol)`, `Ne Güvenli Ne Güvensiz (Sağ)`, `Güvenli`, `Çok Güvenli`) %>%
+  pivot_longer(cols = `Çok Güvensiz`:`Çok Güvenli`, names_to = "Algi", values_to = "Yuzde") %>%
+  mutate(Algi = factor(Algi, levels = c("Çok Güvensiz", "Güvensiz", "Ne Güvenli Ne Güvensiz (Sol)", "Ne Güvenli Ne Güvensiz (Sağ)", "Güvenli", "Çok Güvenli")))
+
+likert_change_data$Grup <- factor(likert_change_data$Grup, 
+                                  levels = c("2025 - Kadin", "2003 - Kadin", "2025 - Erkek", "2003 - Erkek"))
+
+g5 <- ggplot(likert_change_data, aes(x = Grup, y = Yuzde, fill = Algi)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.65) +
+  facet_wrap(~ Mekan) +
+  scale_fill_manual(
+    values = c(
+      "Çok Güvensiz" = RENK_GUVENSIZ, 
+      "Güvensiz" = RENK_KADIN_SOK, 
+      "Ne Güvenli Ne Güvensiz (Sol)" = RENK_NOTR, 
+      "Ne Güvenli Ne Güvensiz (Sağ)" = RENK_NOTR, 
+      "Güvenli" = RENK_GUVENLI, 
+      "Çok Güvenli" = RENK_ERKEK_EV
+    ),
+    breaks = c("Çok Güvensiz", "Güvensiz", "Ne Güvenli Ne Güvensiz (Sağ)", "Güvenli", "Çok Güvenli"),
+    labels = c("Çok Güvensiz", "Güvensiz", "Ne Güvenli Ne Güvensiz", "Güvenli", "Çok Güvenli")
+  ) +
+  scale_y_continuous(labels = function(x) paste0(abs(x), "%"), limits = c(-65, 100)) +
+  geom_hline(yintercept = 0, color = "gray30", size = 0.7) +
+  labs(
+    title = "22 Yıllık Makro Dönüşüm: Güvenlik Algısı Terazisi (2003 vs 2025)",
+    subtitle = "Zaman İçerisinde Algı Kütlesinin Güven (Sağ) ve Güvensizlik (Sol) Yönüne Kayma Analizi (%)",
+    x = "Dönem ve Cinsiyet", y = "Yüzde Dağılımı (%)", fill = "Güvenlik Algısı Seviyesi", caption = "Kaynak: TÜİK"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5, color = "gray30"),
+    legend.position = "bottom",
+    panel.grid.minor = element_blank(),
+    axis.text.y = element_text(face = "bold", size = 11)
+  ) +
+  coord_flip()
+
+ggsave(paste0(klasor_yolu, "grafik5_likert_degisim.png"), plot = g5, width = 12, height = 6, dpi = 300)
+
+# ==============================================================================
+# GRAFİK 6: TÜRKİYE'NİN GÜVENLİK NABZI (4 KRİTİK DÖNEM TERAZİSİ: 2003-2005-2015-2025)
+# ==============================================================================
+# KLAVYE HATASI DÜZELTİLDİ: %in% sembolü kusursuz hale getirildi
+likert_pulse_data <- master_veri %>%
+  filter(Yil %in% c(2003, 2005, 2015, 2025)) %>%
+  mutate(Grup = paste(Yil, Cinsiyet, sep = " - ")) %>%
+  mutate(
+    # Sola bükülen negatif risk kategorileri
+    `Çok Güvensiz` = -Cok_Guvensiz,
+    `Güvensiz`     = -Guvensiz,
+    # Tam merkezde ikiye bölünen nötr grup
+    `Ne Güvenli Ne Güvensiz (Sol)` = -Ne_Guvenli_Ne_Guvensiz / 2,
+    `Ne Güvenli Ne Güvensiz (Sağ)` =  Ne_Guvenli_Ne_Guvensiz / 2,
+    # Sağa bükülen pozitif güven kategorileri
+    `Güvenli`      = Guvenli,
+    `Çok Güvenli`  = Cok_Guvenli
+  ) %>%
+  select(Grup, Mekan, Yil, Cinsiyet, `Çok Güvensiz`, `Güvensiz`, `Ne Güvenli Ne Güvensiz (Sol)`, `Ne Güvenli Ne Güvensiz (Sağ)`, `Güvenli`, `Çok Güvenli`) %>%
+  pivot_longer(cols = `Çok Güvensiz`:`Çok Güvenli`, names_to = "Algi", values_to = "Yuzde") %>%
+  mutate(Algi = factor(Algi, levels = c("Çok Güvensiz", "Güvensiz", "Ne Güvenli Ne Güvensiz (Sol)", "Ne Güvenli Ne Güvensiz (Sağ)", "Güvenli", "Çok Güvenli")))
+
+# Y eksenindeki kronolojik akışı kadın ve erkek blokları olarak kilitliyoruz
+likert_pulse_data$Grup <- factor(likert_pulse_data$Grup, 
+                                 levels = c(
+                                   "2025 - Kadin", "2015 - Kadin", "2005 - Kadin", "2003 - Kadin",
+                                   "2025 - Erkek", "2015 - Erkek", "2005 - Erkek", "2003 - Erkek"
+                                 ))
+
+g6 <- ggplot(likert_pulse_data, aes(x = Grup, y = Yuzde, fill = Algi)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  facet_wrap(~ Mekan) +
+  # Kurumsal renk paleti durakları
+  scale_fill_manual(
+    values = c(
+      "Çok Güvensiz" = RENK_GUVENSIZ, 
+      "Güvensiz" = RENK_KADIN_SOK, 
+      "Ne Güvenli Ne Güvensiz (Sol)" = RENK_NOTR, 
+      "Ne Güvenli Ne Güvensiz (Sağ)" = RENK_NOTR, 
+      "Güvenli" = RENK_GUVENLI, 
+      "Çok Güvenli" = RENK_ERKEK_EV
+    ),
+    breaks = c("Çok Güvensiz", "Güvensiz", "Ne Güvenli Ne Güvensiz (Sağ)", "Güvenli", "Çok Güvenli"),
+    labels = c("Çok Güvensiz", "Güvensiz", "Ne Güvenli Ne Güvensiz", "Güvenli", "Çok Güvenli")
+  ) +
+  scale_y_continuous(labels = function(x) paste0(abs(x), "%"), limits = c(-65, 100)) +
+  geom_hline(yintercept = 0, color = "gray30", size = 0.7) +
+  labs(
+    title = "Türkiye'nin Güvenlik Nabzı: Tarihsel Kırılma Noktaları Analizi",
+    subtitle = "Kriz (2005), Geçiş (2015) ve Toparlanma (2025) Dönemlerinin Terazi Dağılımı (%)",
+    x = "Tarihsel Dönem ve Cinsiyet", y = "Yüzde Dağılımı (%)", fill = "Güvenlik Algısı Seviyesi", caption = "Kaynak: TÜİK"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5, color = "gray30"),
+    legend.position = "bottom",
+    panel.grid.minor = element_blank(),
+    axis.text.y = element_text(face = "bold", size = 10)
+  ) +
+  coord_flip()
+
+# Çıktıyı yeni ismiyle klasörüne sevk ediyoruz
+ggsave(paste0(klasor_yolu, "grafik6_tarihsel_nabiz.png"), plot = g6, width = 12, height = 7, dpi = 300)
+g6
+```
+
