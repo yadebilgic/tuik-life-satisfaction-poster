@@ -1,5 +1,7 @@
 # Longitudinal Safety Perception & Life Satisfaction Analysis (2003–2025)
 
+[![View Academic Poster](https://img.shields.io/badge/🖼️_View_Academic_Poster-PDF-blue?style=for-the-badge)](./tuik_satisfaction_poster.pdf)
+
 This repository contains an academic statistical poster and R visualization pipeline analyzing longitudinal microdata from the **TÜİK (Turkish Statistical Institute) Life Satisfaction Survey (2003–2025)**.
 
 
